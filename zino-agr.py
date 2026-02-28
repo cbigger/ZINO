@@ -14,7 +14,11 @@ UDS socket: /run/zino/agr.sock (configurable)
 Inbound message types:
   {"type": "run", "messages": [...], "temperature": float, "top_p": float,
    "max_iterations": int (optional)}
-      → {"type": "result", "content": str, "iterations": int}
+      → N × {"type": "chunk",      "delta": str}
+        N × {"type": "tool_start", "kind": str, "name": str, "description": str}
+        N × {"type": "tool_done",  "kind": str, "name": str}
+        1 × {"type": "done",       "full_text": str, "iterations": int}
+      All responses are streaming.
 
   {"type": "ping"}
       → {"type": "pong"}
@@ -625,10 +629,33 @@ class AgrService:
                             raw_block = parser.raw_for_interrupt(edata)
                             continuation_text += raw_block
 
+                            # Build description and notify client
+                            if edata["kind"] == "tool_call":
+                                description = edata.get("name", "unknown tool")
+                            elif edata["kind"] == "task":
+                                description = f'{edata.get("skill", "unknown")}: {edata.get("request", "")[:80]}'
+                            else:
+                                description = "working..."
+
+                            tool_name = edata.get("name") or edata.get("skill", "")
+                            await send_msg(client_writer, {
+                                "type": "tool_start",
+                                "kind": edata["kind"],
+                                "name": tool_name,
+                                "description": description,
+                            })
+
                             # Execute immediately
                             result_text = await self._execute_interrupt(
                                 edata, temperature, top_p,
                             )
+
+                            await send_msg(client_writer, {
+                                "type": "tool_done",
+                                "kind": edata["kind"],
+                                "name": tool_name,
+                            })
+
                             tag = ("tool_response" if edata["kind"] == "tool_call"
                                    else "task_response")
                             response_block = f"\n<{tag}>\n{result_text}\n</{tag}>\n"
@@ -713,23 +740,14 @@ async def handle_connection(
             max_iterations = int(
                 msg.get("max_iterations", service.default_max_iter)
             )
-            want_stream = bool(msg.get("stream", False))
 
-            log.info("run: %d messages, temp=%.2f, top_p=%.2f, max_iter=%d, stream=%s",
-                     len(messages), temperature, top_p, max_iterations, want_stream)
+            log.info("run: %d messages, temp=%.2f, top_p=%.2f, max_iter=%d",
+                     len(messages), temperature, top_p, max_iterations)
 
             try:
-                if want_stream:
-                    await service.run_streaming(
-                        messages, temperature, top_p, max_iterations, writer,
-                    )
-                else:
-                    result = await service.run(
-                        messages, temperature, top_p, max_iterations,
-                    )
-                    log.info("run complete: %d iterations, %d chars",
-                             result["iterations"], len(result["content"]))
-                    await send_msg(writer, {"type": "result", **result})
+                await service.run_streaming(
+                    messages, temperature, top_p, max_iterations, writer,
+                )
             except Exception as e:
                 log.error("agentic runtime error: %s", e)
                 await send_msg(writer, {

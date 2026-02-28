@@ -4,7 +4,6 @@ zino-cli — minimal test client for zino-daemon.
 
 Usage:
   python3 zino-cli.py "your message here"
-  python3 zino-cli.py --stream "your message here"
   python3 zino-cli.py --config /path/to/ZINO.toml "your message here"
 """
 
@@ -16,6 +15,19 @@ from pathlib import Path
 
 from zino_common import send_msg, recv_msg, open_uds
 
+SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+async def spinner(description: str):
+    i = 0
+    try:
+        while True:
+            print(f"\r  {SPINNER_CHARS[i % len(SPINNER_CHARS)]} {description}", end="", flush=True)
+            await asyncio.sleep(0.1)
+            i += 1
+    except asyncio.CancelledError:
+        print(f"\r  ✓ {description}", flush=True)
+
 
 def load_socket(config_path: str) -> str:
     p = Path(config_path)
@@ -26,21 +38,33 @@ def load_socket(config_path: str) -> str:
     return config.get("daemon", {}).get("socket", "/run/zino/daemon.sock")
 
 
-async def send_request(socket_path: str, message: str, stream: bool, channel_id: str | None):
+async def send_request(socket_path: str, message: str, channel_id: str | None):
     reader, writer = await open_uds(socket_path)
 
-    payload = {"message": message, "stream": stream}
+    payload = {"message": message}
     if channel_id:
         payload["channel_id"] = channel_id
 
     await send_msg(writer, payload)
 
-    if stream:
+    spinner_task = None
+    try:
         while True:
             packet = await recv_msg(reader)
             ptype = packet.get("type")
             if ptype == "chunk":
                 print(packet.get("delta", ""), end="", flush=True)
+            elif ptype == "tool_start":
+                desc = packet.get("description", "working...")
+                spinner_task = asyncio.create_task(spinner(desc))
+            elif ptype == "tool_done":
+                if spinner_task:
+                    spinner_task.cancel()
+                    try:
+                        await spinner_task
+                    except asyncio.CancelledError:
+                        pass
+                    spinner_task = None
             elif ptype == "done":
                 print()  # final newline
                 break
@@ -50,25 +74,21 @@ async def send_request(socket_path: str, message: str, stream: bool, channel_id:
             else:
                 print(f"\nUnknown packet: {packet}", file=sys.stderr)
                 break
-    else:
-        packet = await recv_msg(reader)
-        ptype = packet.get("type")
-        if ptype == "response":
-            print(packet.get("content", ""))
-        elif ptype == "error":
-            print(f"Error: {packet.get('message')}", file=sys.stderr)
-        else:
-            print(f"Unexpected: {packet}", file=sys.stderr)
-
-    writer.close()
-    await writer.wait_closed()
+    finally:
+        if spinner_task:
+            spinner_task.cancel()
+            try:
+                await spinner_task
+            except asyncio.CancelledError:
+                pass
+        writer.close()
+        await writer.wait_closed()
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="zino-cli: test client for zino-daemon")
     parser.add_argument("message", nargs="*", help="Message to send")
-    parser.add_argument("--stream",     "-s", action="store_true")
     parser.add_argument("--channel",    "-ch", default=None)
     parser.add_argument("--config",     "-c",  default=os.environ.get("ZINO_CONFIG", "ZINO.toml"))
     args = parser.parse_args()
@@ -76,4 +96,4 @@ if __name__ == "__main__":
     message = " ".join(args.message) if args.message else "What is today's date?"
     socket_path = load_socket(args.config)
 
-    asyncio.run(send_request(socket_path, message, args.stream, args.channel))
+    asyncio.run(send_request(socket_path, message, args.channel))

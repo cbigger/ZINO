@@ -11,7 +11,11 @@ Responsibilities:
   - Routes through zino-agr for agentic loop (tool/skill execution), or
     falls back to direct zino-rtr dispatch when agr is unavailable.
   - Stores chat history via zino-mem (optional).
-  - Returns the model response to the client (streaming or collected).
+  - Returns the model response as a stream of packets.
+
+All responses are streaming.  The daemon forwards chunk, tool_start,
+tool_done, done, and error packets from agr (or rtr) to the client
+in real-time.
 
 All service connections are attempted live per-request.  If a service is
 unreachable the daemon degrades gracefully — no startup probe cache that
@@ -20,13 +24,14 @@ can go stale.
 UDS socket: /run/zino/daemon.sock (configurable)
 
 Inbound message from client:
-  {"message": str, "channel_id": str (optional), "stream": bool (optional)}
+  {"message": str, "channel_id": str (optional)}
 
-Outbound to client:
-  Streaming:    N × {"type": "chunk",    "delta":     str}
-                  1 × {"type": "done",     "full_text": str}
-  Collected:      1 × {"type": "response", "content":   str}
-  Error:          1 × {"type": "error",    "message":   str}
+Outbound to client (always streaming):
+  N × {"type": "chunk",      "delta": str}
+  N × {"type": "tool_start", "kind": str, "name": str, "description": str}
+  N × {"type": "tool_done",  "kind": str, "name": str}
+  1 × {"type": "done",       "full_text": str}
+  Error:  1 × {"type": "error", "message": str}
 """
 
 import asyncio
@@ -176,17 +181,13 @@ async def dispatch_to_agr(
     temperature: float,
     top_p: float,
     max_iterations: int,
-    want_stream: bool,
     client_writer: asyncio.StreamWriter,
 ) -> str | None:
     """
     Send assembled messages to zino-agr for agentic processing.
 
-    When want_stream=True, agr streams chunk/done/error packets which are
-    forwarded directly to client_writer in real-time.
-
-    When want_stream=False, chunks are collected internally and sent as a
-    single {"type": "response"} packet.
+    Always streams: forwards chunk/tool_start/tool_done/done/error packets
+    from agr directly to client_writer in real-time.
 
     Returns the full response text (for history storage), or None on failure.
     """
@@ -203,41 +204,27 @@ async def dispatch_to_agr(
             "temperature":    temperature,
             "top_p":          top_p,
             "max_iterations": max_iterations,
-            "stream":         want_stream,
         })
 
-        if want_stream:
-            # Forward streaming packets from agr directly to client
-            full_text = None
-            while True:
-                packet = await recv_msg(reader)
-                ptype = packet.get("type")
-                if ptype == "chunk":
-                    await send_msg(client_writer, packet)
-                elif ptype == "done":
-                    await send_msg(client_writer, packet)
-                    full_text = packet.get("full_text", "")
-                    log.info("agr streaming done: %d chars", len(full_text))
-                    break
-                elif ptype == "error":
-                    await send_msg(client_writer, packet)
-                    log.error("agr streaming error: %s", packet.get("message"))
-                    break
-                else:
-                    log.warning("unexpected agr packet type: %s", ptype)
-                    break
-            return full_text
-        else:
-            # Non-streaming: read the single result packet
+        full_text = None
+        while True:
             packet = await recv_msg(reader)
-            if packet.get("type") == "result":
-                content = packet.get("content", "")
-                await send_msg(client_writer, {"type": "response", "content": content})
-                return content
-            if packet.get("type") == "error":
-                log.error("agr error: %s", packet.get("message"))
+            ptype = packet.get("type")
+            if ptype in ("chunk", "tool_start", "tool_done"):
                 await send_msg(client_writer, packet)
-            return None
+            elif ptype == "done":
+                await send_msg(client_writer, packet)
+                full_text = packet.get("full_text", "")
+                log.info("agr streaming done: %d chars", len(full_text))
+                break
+            elif ptype == "error":
+                await send_msg(client_writer, packet)
+                log.error("agr streaming error: %s", packet.get("message"))
+                break
+            else:
+                log.warning("unexpected agr packet type: %s", ptype)
+                break
+        return full_text
 
     except Exception as e:
         log.error("agr dispatch error: %s", e)
@@ -264,16 +251,15 @@ async def dispatch_to_rtr(
     messages: list[dict],
     temperature: float,
     top_p: float,
-    want_stream: bool,
     rtr_caps: dict,
     client_writer: asyncio.StreamWriter,
 ) -> str | None:
     """
-    Send assembled messages to zino-rtr.
-    Forward the response to the client.
+    Send assembled messages to zino-rtr (fallback when agr is unavailable).
+    Always streams.  Forward chunk/done/error packets to client.
     Returns the full response text (for history storage), or None on error.
     """
-    do_stream = want_stream and rtr_caps.get("streaming", False)
+    do_stream = rtr_caps.get("streaming", False)
 
     try:
         reader, writer = await open_uds(rtr_socket)
@@ -304,10 +290,14 @@ async def dispatch_to_rtr(
                     break
             return full_text
         else:
+            # rtr doesn't support streaming — collect and wrap as stream
             packet = await recv_msg(reader)
-            await send_msg(client_writer, packet)
             if packet.get("type") == "response":
-                return packet.get("content", "")
+                content = packet.get("content", "")
+                await send_msg(client_writer, {"type": "chunk", "delta": content})
+                await send_msg(client_writer, {"type": "done", "full_text": content})
+                return content
+            await send_msg(client_writer, packet)
             return None
 
     except Exception as e:
@@ -341,11 +331,10 @@ async def handle_client(
             await send_msg(writer, {"type": "error", "message": "Empty message."})
             return
 
-        channel_id  = msg.get("channel_id")
-        want_stream = bool(msg.get("stream", False))
+        channel_id = msg.get("channel_id")
 
-        log.info("request: msg_len=%d channel=%s stream=%s",
-                 len(user_message), channel_id, want_stream)
+        log.info("request: msg_len=%d channel=%s",
+                 len(user_message), channel_id)
         log.debug("user message: %s", user_message)
 
         agent       = config.get("agent", {})
@@ -378,13 +367,13 @@ async def handle_client(
         # 4. Route through agr (agentic loop), fall back to direct rtr
         response_content = await dispatch_to_agr(
             sockets["agr"], messages, temperature, top_p, max_iter,
-            want_stream, writer,
+            writer,
         )
         if response_content is None:
-            log.info("using direct rtr dispatch (stream=%s)", want_stream)
+            log.info("using direct rtr dispatch")
             response_content = await dispatch_to_rtr(
                 sockets["rtr"], messages, temperature, top_p,
-                want_stream, rtr_caps_cache, writer,
+                rtr_caps_cache, writer,
             )
 
         # 5. Store history in zino-mem (optional — tries every request)
