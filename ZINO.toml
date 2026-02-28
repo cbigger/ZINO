@@ -11,33 +11,33 @@ temperature = 0.7
 top_p       = 1.0
 
 [daemon]
-socket = "/run/zino/daemon.sock"
+socket = "/run/zino/daemon.sock"   # or "http://0.0.0.0:8000" for HTTP transport
 
 [sys]
-socket      = "/run/zino/sys.sock"
+socket      = "/run/zino/sys.sock" # or "http://0.0.0.0:8001"
 template    = "SYSTEM.md"            # loaded from working directory
 personality = ""                     # optional personality text for %%PERSONALITY%%
 soft_memory = ""                     # initial soft memory for %%SOFT_MEMORIES%%
 
 [rtr]
-socket    = "/run/zino/rtr.sock"
+socket    = "/run/zino/rtr.sock"   # or "http://0.0.0.0:8002"
 streaming = true
 
 [exc]
-socket  = "/run/zino/exc.sock"
+socket  = "/run/zino/exc.sock"     # or "http://0.0.0.0:8003"
 timeout = 30                         # execution timeout in seconds
 
 [mem]
-socket   = "/run/zino/mem.sock"
+socket   = "/run/zino/mem.sock"    # or "http://0.0.0.0:8004"
 data_dir = "data/mem"                # persistent storage for histories and memories
 
 [ctx]
-socket           = "/run/zino/ctx.sock"
+socket           = "/run/zino/ctx.sock"  # or "http://0.0.0.0:8005"
 history_limit    = 50                # max chat history messages to include
 hard_memory_top_k = 3                # number of hard memory results per search
 
 [agr]
-socket         = "/run/zino/agr.sock"
+socket         = "/run/zino/agr.sock"  # or "http://0.0.0.0:8006"
 max_iterations = 5                   # max tool/skill execution loops per request
 
 [tools]

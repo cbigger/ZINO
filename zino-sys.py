@@ -41,7 +41,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, setup_logging
+from zino_common import send_msg, recv_msg, start_server, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -239,21 +239,11 @@ async def main(config_path: str):
 
     service = SysService(config)
 
-    socket_path = config.get("sys", {}).get("socket", "/run/zino/sys.sock")
-    Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        Path(socket_path).unlink()
-    except FileNotFoundError:
-        pass
-
-    server = await asyncio.start_unix_server(
-        lambda r, w: handle_connection(service, r, w),
-        path=socket_path,
+    addr = config.get("sys", {}).get("socket", "/run/zino/sys.sock")
+    server = await start_server(
+        lambda r, w: handle_connection(service, r, w), addr, log,
     )
-
-    log.info("listening on %s", socket_path)
-    async with server:
-        await server.serve_forever()
+    await server.serve_forever()
 
 
 log = None  # set in main()

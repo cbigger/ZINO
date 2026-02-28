@@ -40,7 +40,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, open_uds, setup_logging
+from zino_common import send_msg, recv_msg, open_connection, start_server, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -64,7 +64,7 @@ def load_config(path: str) -> dict:
 async def probe_rtr(rtr_socket: str) -> dict:
     """Ask zino-rtr for its capabilities.  Returns {} on failure."""
     try:
-        reader, writer = await open_uds(rtr_socket)
+        reader, writer = await open_connection(rtr_socket)
         await send_msg(writer, {"type": "capabilities"})
         caps = await recv_msg(reader)
         writer.close()
@@ -81,7 +81,7 @@ async def fetch_system_prompt(sys_socket: str) -> str | None:
     Returns None if zino-sys is unavailable — daemon continues in bare mode.
     """
     try:
-        reader, writer = await open_uds(sys_socket)
+        reader, writer = await open_connection(sys_socket)
         await send_msg(writer, {"type": "get"})
         msg = await recv_msg(reader)
         writer.close()
@@ -103,7 +103,7 @@ async def fetch_context(
     Returns [] if zino-ctx is unavailable.
     """
     try:
-        reader, writer = await open_uds(ctx_socket)
+        reader, writer = await open_connection(ctx_socket)
         await send_msg(writer, {
             "type":         "build",
             "channel_id":   channel_id,
@@ -125,7 +125,7 @@ async def store_history(
 ):
     """Append a user+assistant exchange to channel history in zino-mem."""
     try:
-        reader, writer = await open_uds(mem_socket)
+        reader, writer = await open_connection(mem_socket)
         await send_msg(writer, {
             "type":       "append_history",
             "channel_id": channel_id,
@@ -181,7 +181,7 @@ async def dispatch_to_agr(
     temperature: float,
     top_p: float,
     max_iterations: int,
-    client_writer: asyncio.StreamWriter,
+    client_writer,
 ) -> str | None:
     """
     Send assembled messages to zino-agr for agentic processing.
@@ -192,7 +192,7 @@ async def dispatch_to_agr(
     Returns the full response text (for history storage), or None on failure.
     """
     try:
-        reader, writer = await open_uds(agr_socket)
+        reader, writer = await open_connection(agr_socket)
     except Exception as e:
         log.info("agr not available: %s — falling back to rtr.", e)
         return None
@@ -252,7 +252,7 @@ async def dispatch_to_rtr(
     temperature: float,
     top_p: float,
     rtr_caps: dict,
-    client_writer: asyncio.StreamWriter,
+    client_writer,
 ) -> str | None:
     """
     Send assembled messages to zino-rtr (fallback when agr is unavailable).
@@ -262,7 +262,7 @@ async def dispatch_to_rtr(
     do_stream = rtr_caps.get("streaming", False)
 
     try:
-        reader, writer = await open_uds(rtr_socket)
+        reader, writer = await open_connection(rtr_socket)
     except Exception as e:
         await send_msg(client_writer,
                        {"type": "error",
@@ -427,21 +427,11 @@ async def main(config_path: str):
     else:
         log.info("rtr not yet reachable — will probe on first request.")
 
-    socket_path = sockets["daemon"]
-    Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        Path(socket_path).unlink()
-    except FileNotFoundError:
-        pass
-
-    server = await asyncio.start_unix_server(
+    server = await start_server(
         lambda r, w: handle_client(config, sockets, rtr_caps_cache, r, w),
-        path=socket_path,
+        sockets["daemon"], log,
     )
-
-    log.info("listening on %s", socket_path)
-    async with server:
-        await server.serve_forever()
+    await server.serve_forever()
 
 
 log = None  # set in main()
