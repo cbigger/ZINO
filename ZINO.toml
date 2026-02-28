@@ -1,0 +1,30 @@
+# ZINO.toml — main configuration file
+
+[api]
+base_url = "https://openrouter.ai/api/v1"   # or any OpenAI-compatible endpoint
+key      = ""
+[service]
+model = "openrouter/auto"
+
+[agent]
+temperature = 0.7
+top_p       = 1.0
+
+[daemon]
+socket = "/run/zino/daemon.sock"
+
+[sys]
+socket      = "/run/zino/sys.sock"
+template    = "SYSTEM.md"            # loaded from working directory
+personality = ""                     # optional personality text for %%PERSONALITY%%
+soft_memory = ""                     # initial soft memory for %%SOFT_MEMORIES%%
+
+[rtr]
+socket    = "/run/zino/rtr.sock"
+streaming = true
+
+[tools]
+dir = "tools"
+
+[skills]
+dir = "skills"
