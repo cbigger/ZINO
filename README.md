@@ -1,5 +1,5 @@
 # Z I N O
-A modular agent platform: **Z**ino **I**s **N**ot **O**penclaw.
+A modular agent platform: **Z**INO **I**s **N**ot **O**penclaw.
 
 Modern agent systems are a combination of a lot of moving parts.
 On the LLM side, we have the building of three different capabilities:
