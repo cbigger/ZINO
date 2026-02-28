@@ -15,9 +15,8 @@ The call format is identical for all tools. Use the fn_name exactly as listed.
 Supply complete, directly executable code. No markdown fencing. Include a shebang if required.
 
 ━━━ MECHANISM 2: Delegated Skill Execution ━━━
-Use for complex tasks that benefit from a two-stage interpreter/fabricator
-pipeline with static analysis. The request is handed off to a specialised model
-pair that will reason about, write, validate, and execute the code.
+Use for complex tasks more complex, multi-step tasks. The request is handed off to a specialised sub-agent
+model that will reason about, write, validate, and execute the required code.
 Emit this block to delegate a task to a skill pipeline:
 
 <task>
