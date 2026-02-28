@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "executor": "bash",
+    "file_extension": ".sh",
+    "static_analysis": "shellcheck"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "executor": "python3",
+    "file_extension": ".py",
+    "static_analysis": null
+  }
+}
