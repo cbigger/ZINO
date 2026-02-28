@@ -1,25 +1,46 @@
 # Z I N O
-A modular agent platform: **Z**INO **I**s **N**ot **O**penclaw.
+A modular agent platform. ZINO stands for **Z**INO **I**s **N**ot **O**penclaw.
 
-Modern agent systems are a combination of a lot of moving parts.
-On the LLM side, we have the building of three different capabilities:
-- **LLM chat inference** uses user:assistant data to generate the "assistant" part of a conversation
-      while the human supplies the "user" text.
-- **Function Calling** parses inference output for specific tokens that denote functions the application
-      can execute programmatically. The function is called, and the output is added on to the inference
-      output, which is then fed back to the model as an incomplete "assistant" message.
+
+## On LLMs and Agents
+Modern agent systems are a combination of a lot of moving parts. It is a necessary process, then, to identify and codify 
+the nature of those parts, so we can come to a shared understanding of how a "simple" LLM can turn into a powerful
+agent system.
+
+On the LLM side, we can track the sequential invention of three different levels of sophistication, which we describe briefly below.
+Complete explanations of our implementation of these components are given in the relevant sections:
+- **The Chat-Instruct LLM Standard** is the standard post-training format for LLM products in use today.
+      Chat mode is the name given to the conversation-like input format that contains "speakers" denoted
+      as "USER" and "ASSISTANT". In Chat mode, LLMs generate text for the ASSISTANT side of the message
+      pairs. Instruct mode is not conversational, but task-based; users make a request, often with
+      accompanying data, and the model responds. This often includes tasks like translating, summarizing,
+      extracting and formatting data, etc. The Chat-Instruct fine-tuning format is the foundation of
+      all modern LLM products.  
+- **Function Calling** parses inference output for specific tokens that denote calls to functions the
+      application can execute programmatically, usually called "tools". In the Hermes style of function calling - the most common -
+      inference is paused when a tool call block closes, and the application attempts to execute the function.
+      The output of the execution is added to the already generated output, which is then fed back to the model
+      as an incomplete "assistant" message. The model "sees" the beginning of an ASSISTANT response, the <tool call>
+	  XML wraps, and the result inside of the <tool result> block, enabling it to continue generating with the
+      newly added information. Function calling has become a standard for all the major LLM providers,
+      and it enables the functioning of cross-chat memory, web browsing, image generation, and even
+      complete agent platforms.
 - **Agentic Runtimes** use skill definitions to chain together multiple tool calls, delegate jobs to
-      sub-agents, create and respond to events, and perform other long-haul tasks.
-
-
-To build out a properly modular system, we need to define the borders of these three foundational
-paradigms, map out their components, and build a system that can put it all together.
+      sub-agents, create and respond to events, and perform other long-haul tasks. They build off of the
+      same general idea behind function calling by adding additional depth and features to the way that
+      interrupt tokens are handled. Agentic runtimes often mix in standard tools like *cron* (a linux tool
+      used to schedule jobs), email, filesystem commands, etc., in order to accomplish more complex tasks.
+      Skill definitions are similar to function definitions but contain a  longer set of specific instructions
+      intended to guide the LLM through their task. As opposed to using strict tool signatures,
+      skills usually start a new conversation "behind the scenes", where the skill data is injected into
+      a clean context and used to perform multiple function-calls while the user-facing model waits and
+      supervises.
 
 
 If the above information seems like a lot to consider, don't be dissuaded: Agent runtimes really 
 aren't that mysterious. Let's start with the end API call and work our way backwards through all
 the parts that combine to build it. We're going to start with the strings - the prompt and 
-conversation engineering.
+conversation engineering, before we move on to the programmatic parts of a ZINO system.
 
 
 ## Building the LLM Request
@@ -100,9 +121,10 @@ when it thinks bash would help, and it writes the code inside of the tool callin
 
 However, there is a bit more to it than that. For starters, how do we stop the application from executing
 dangerous or out-of-scope commands? How do we save tokens by cleaning and validating the code? What do we
-do with the output, errors, etc.?
+do with the output, errors, etc.? These are the kinds of choices that can be isolated to the execution
+component of the agent application.
 
-ZINO uses hermes-style function calling, which parses for <tool_call> tokens in the model's 
+The basic ZINO uses hermes-style function calling, which parses for <tool_call> tokens in the model's 
 output and uses the structured inference text to run tools. Generation is paused at the tool 
 invocation, the tool is executed, and a <tool_response> block containing the output is appended 
 after the original call block. The model then sees the full call and response inline and 
@@ -149,8 +171,8 @@ packaged daemons on debian linux
 - zino-daemon - This is the main entrypoint to the platform. It loads the main configuration, 
                 contacts all the other services passing their boot configuration data as 
                 needed, and provides a central control point for administration. All other 
-                services depend on this guy to function, and is one of the only required 
-                modules, the other being the zino-rtr. This guy does a lot of taking and 
+                services depend on this guy to function, and it is one of the only required 
+                modules, the other being zino-rtr. This guy does a lot of taking and 
                 reformatting of data to be used by other components. It recieves all incoming 
                 requests via Unix Domain Socket, and starts processing the (message, 
                 channel_id) data. The channel_hash is optional, and default behaviour can be 
