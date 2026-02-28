@@ -36,7 +36,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, open_uds, setup_logging
+from zino_common import send_msg, recv_msg, open_connection, start_server, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -297,7 +297,7 @@ async def rtr_infer(
     rtr_socket: str, messages: list[dict], temperature: float, top_p: float,
 ) -> str:
     """Send messages to zino-rtr for inference (non-streaming)."""
-    reader, writer = await open_uds(rtr_socket)
+    reader, writer = await open_connection(rtr_socket)
     try:
         await send_msg(writer, {
             "type":        "infer",
@@ -322,7 +322,7 @@ async def rtr_infer_stream(
     Async generator: stream inference from zino-rtr.
     Yields ("chunk", delta_str) and finally ("done", full_text_str).
     """
-    reader, writer = await open_uds(rtr_socket)
+    reader, writer = await open_connection(rtr_socket)
     try:
         await send_msg(writer, {
             "type":        "infer",
@@ -355,7 +355,7 @@ async def rtr_infer_stream(
 
 async def exc_execute(exc_socket: str, executor: str, code: str) -> dict:
     """Send code to zino-exc for execution."""
-    reader, writer = await open_uds(exc_socket)
+    reader, writer = await open_connection(exc_socket)
     try:
         await send_msg(writer, {
             "type":     "execute",
@@ -592,7 +592,7 @@ class AgrService:
         temperature: float,
         top_p: float,
         max_iterations: int,
-        client_writer: asyncio.StreamWriter,
+        client_writer,
     ):
         """
         Streaming agentic loop.  Forwards text chunks to client_writer in
@@ -782,21 +782,11 @@ async def main(config_path: str):
 
     service = AgrService(config)
 
-    socket_path = config.get("agr", {}).get("socket", "/run/zino/agr.sock")
-    Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        Path(socket_path).unlink()
-    except FileNotFoundError:
-        pass
-
-    server = await asyncio.start_unix_server(
-        lambda r, w: handle_connection(service, r, w),
-        path=socket_path,
+    addr = config.get("agr", {}).get("socket", "/run/zino/agr.sock")
+    server = await start_server(
+        lambda r, w: handle_connection(service, r, w), addr, log,
     )
-
-    log.info("listening on %s", socket_path)
-    async with server:
-        await server.serve_forever()
+    await server.serve_forever()
 
 
 log = None  # set in main()

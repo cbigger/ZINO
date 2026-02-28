@@ -13,7 +13,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, open_uds
+from zino_common import send_msg, recv_msg, open_connection
 
 SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -39,7 +39,7 @@ def load_socket(config_path: str) -> str:
 
 
 async def send_request(socket_path: str, message: str, channel_id: str | None):
-    reader, writer = await open_uds(socket_path)
+    reader, writer = await open_connection(socket_path)
 
     payload = {"message": message}
     if channel_id:

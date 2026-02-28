@@ -29,7 +29,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, open_uds, setup_logging
+from zino_common import send_msg, recv_msg, open_connection, start_server, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -80,7 +80,7 @@ async def fetch_chat_history(
 ) -> list[dict]:
     """Retrieve chat history from zino-mem."""
     try:
-        reader, writer = await open_uds(mem_socket)
+        reader, writer = await open_connection(mem_socket)
         await send_msg(writer, {
             "type": "get_history",
             "channel_id": channel_id,
@@ -102,7 +102,7 @@ async def search_hard_memories(
 ) -> list[dict]:
     """Search hard memories from zino-mem by similarity."""
     try:
-        reader, writer = await open_uds(mem_socket)
+        reader, writer = await open_connection(mem_socket)
         await send_msg(writer, {
             "type": "search_hard",
             "query": query,
@@ -226,21 +226,11 @@ async def main(config_path: str):
 
     service = CtxService(config)
 
-    socket_path = config.get("ctx", {}).get("socket", "/run/zino/ctx.sock")
-    Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        Path(socket_path).unlink()
-    except FileNotFoundError:
-        pass
-
-    server = await asyncio.start_unix_server(
-        lambda r, w: handle_connection(service, r, w),
-        path=socket_path,
+    addr = config.get("ctx", {}).get("socket", "/run/zino/ctx.sock")
+    server = await start_server(
+        lambda r, w: handle_connection(service, r, w), addr, log,
     )
-
-    log.info("listening on %s", socket_path)
-    async with server:
-        await server.serve_forever()
+    await server.serve_forever()
 
 
 log = None  # set in main()
