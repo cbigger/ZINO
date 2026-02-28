@@ -1,4 +1,4 @@
-# Zino Is Not Openclaw | Z I N O
+# ZINO Is Not Openclaw | Z I N O
 A modular agent platform.
 
 Modern agent systems are a combination of a lot of moving parts.
