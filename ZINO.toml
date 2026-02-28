@@ -23,6 +23,23 @@ soft_memory = ""                     # initial soft memory for %%SOFT_MEMORIES%%
 socket    = "/run/zino/rtr.sock"
 streaming = true
 
+[exc]
+socket  = "/run/zino/exc.sock"
+timeout = 30                         # execution timeout in seconds
+
+[mem]
+socket   = "/run/zino/mem.sock"
+data_dir = "data/mem"                # persistent storage for histories and memories
+
+[ctx]
+socket           = "/run/zino/ctx.sock"
+history_limit    = 50                # max chat history messages to include
+hard_memory_top_k = 3                # number of hard memory results per search
+
+[agr]
+socket         = "/run/zino/agr.sock"
+max_iterations = 5                   # max tool/skill execution loops per request
+
 [tools]
 dir = "tools"
 

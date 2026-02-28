@@ -41,7 +41,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg
+from zino_common import send_msg, recv_msg, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -65,7 +65,7 @@ def load_config(path: str) -> dict:
 def load_tools(config: dict) -> dict[str, dict]:
     tools_dir = Path(config.get("tools", {}).get("dir", "tools"))
     if not tools_dir.exists():
-        print(f"[sys] Tools directory not found: {tools_dir} — no tools loaded.", file=sys.stderr)
+        log.warning("tools directory not found: %s — no tools loaded.", tools_dir)
         return {}
     tools: dict[str, dict] = {}
     for tool_file in sorted(tools_dir.glob("*.json")):
@@ -78,7 +78,7 @@ def load_tools(config: dict) -> dict[str, dict]:
 def load_skills(config: dict) -> dict[str, dict]:
     skills_dir = Path(config.get("skills", {}).get("dir", "skills"))
     if not skills_dir.exists():
-        print(f"[sys] Skills directory not found: {skills_dir} — no skills loaded.", file=sys.stderr)
+        log.warning("skills directory not found: %s — no skills loaded.", skills_dir)
         return {}
     skills: dict[str, dict] = {}
     for skill_file in sorted(skills_dir.glob("*.json")):
@@ -101,7 +101,7 @@ def load_template(config: dict) -> str:
     path = config.get("sys", {}).get("template", "SYSTEM.md")
     p = Path(path)
     if not p.exists():
-        print(f"[sys] SYSTEM.md not found at {path} — serving empty system prompt.", file=sys.stderr)
+        log.warning("SYSTEM.md not found at %s — serving empty system prompt.", path)
         return ""
     return p.read_text(encoding="utf-8")
 
@@ -165,7 +165,7 @@ class SysService:
         self.tools       = load_tools(config)
         self.skills      = load_skills(config)
         self._prompt     = build_prompt(config, self.tools, self.skills, self.soft_memory)
-        print(f"[sys] Loaded {len(self.tools)} tool(s), {len(self.skills)} skill(s).")
+        log.info("loaded %d tool(s), %d skill(s).", len(self.tools), len(self.skills))
 
     @property
     def prompt(self) -> str:
@@ -175,13 +175,13 @@ class SysService:
         self.tools   = load_tools(self.config)
         self.skills  = load_skills(self.config)
         self._prompt = build_prompt(self.config, self.tools, self.skills, self.soft_memory)
-        print(f"[sys] Reloaded: {len(self.tools)} tool(s), {len(self.skills)} skill(s).")
+        log.info("reloaded: %d tool(s), %d skill(s).", len(self.tools), len(self.skills))
         return self._prompt
 
     def set_soft_memory(self, content: str) -> str:
         self.soft_memory = content
         self._prompt     = build_prompt(self.config, self.tools, self.skills, self.soft_memory)
-        print("[sys] Soft memory updated, prompt rebuilt.")
+        log.info("soft memory updated, prompt rebuilt.")
         return self._prompt
 
 
@@ -195,11 +195,14 @@ async def handle_connection(service: SysService, reader: asyncio.StreamReader, w
         msg = await recv_msg(reader)
         msg_type = msg.get("type")
 
+        log.info("request type=%s", msg_type)
+
         if msg_type == "ping":
             await send_msg(writer, {"type": "pong"})
 
         elif msg_type == "get":
             await send_msg(writer, {"type": "system_prompt", "content": service.prompt})
+            log.debug("served system prompt (%d chars)", len(service.prompt))
 
         elif msg_type == "reload":
             prompt = service.reload()
@@ -212,11 +215,12 @@ async def handle_connection(service: SysService, reader: asyncio.StreamReader, w
 
         else:
             await send_msg(writer, {"type": "error", "message": f"Unknown message type: {msg_type}"})
+            log.warning("unknown message type: %s", msg_type)
 
     except asyncio.IncompleteReadError:
         pass
     except Exception as e:
-        print(f"[sys] Handler error: {e}", file=sys.stderr)
+        log.error("handler error: %s", e)
     finally:
         writer.close()
         await writer.wait_closed()
@@ -229,6 +233,10 @@ async def handle_connection(service: SysService, reader: asyncio.StreamReader, w
 
 async def main(config_path: str):
     config  = load_config(config_path)
+
+    global log
+    log = setup_logging("zino.sys", config)
+
     service = SysService(config)
 
     socket_path = config.get("sys", {}).get("socket", "/run/zino/sys.sock")
@@ -243,10 +251,12 @@ async def main(config_path: str):
         path=socket_path,
     )
 
-    print(f"[sys] Listening on {socket_path}")
+    log.info("listening on %s", socket_path)
     async with server:
         await server.serve_forever()
 
+
+log = None  # set in main()
 
 if __name__ == "__main__":
     import argparse

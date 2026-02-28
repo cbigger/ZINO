@@ -1,0 +1,26 @@
+[Unit]
+Description=ZINO Daemon (Main Coordinator)
+Documentation=file:///opt/zino/README.md
+PartOf=zino.target
+After=network-online.target zino-rtr.service zino-sys.service zino-exc.service zino-mem.service zino-ctx.service zino-agr.service
+Requires=zino-rtr.service
+Wants=network-online.target zino-sys.service zino-exc.service zino-mem.service zino-ctx.service zino-agr.service
+
+[Service]
+Type=simple
+User=zino
+Group=zino
+WorkingDirectory=/opt/zino
+EnvironmentFile=-/etc/zino/env
+ExecStart=/opt/zino/venv/bin/python3 /opt/zino/zino-daemon.py --config /etc/zino/ZINO.toml
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=zino.target

@@ -1,0 +1,25 @@
+[Unit]
+Description=ZINO Agentic Runtime
+Documentation=file:///opt/zino/README.md
+PartOf=zino.target zino-daemon.service
+After=network-online.target zino-rtr.service zino-exc.service
+Wants=network-online.target zino-rtr.service zino-exc.service
+
+[Service]
+Type=simple
+User=zino
+Group=zino
+WorkingDirectory=/opt/zino
+EnvironmentFile=-/etc/zino/env
+ExecStart=/opt/zino/venv/bin/python3 /opt/zino/zino-agr.py --config /etc/zino/ZINO.toml
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=zino.target

@@ -7,6 +7,8 @@ All services speak this protocol.
 
 import asyncio
 import json
+import logging
+import os
 import struct
 
 # ---------------------------------------------------------------------------
@@ -37,3 +39,39 @@ async def recv_msg(reader: asyncio.StreamReader) -> dict:
 
 async def open_uds(path: str):
     return await asyncio.open_unix_connection(path)
+
+
+# ---------------------------------------------------------------------------
+# Logging setup — shared by all services
+# ---------------------------------------------------------------------------
+
+
+def setup_logging(name: str, config: dict | None = None) -> logging.Logger:
+    """
+    Configure and return a logger for a ZINO service.
+
+    Level is determined by (highest priority first):
+      1. ZINO_LOG_LEVEL environment variable
+      2. [logging] level in ZINO.toml
+      3. "INFO" default
+
+    Output goes to stderr (which systemd captures into the journal).
+    """
+    level_str = (
+        os.environ.get("ZINO_LOG_LEVEL")
+        or (config or {}).get("logging", {}).get("level")
+        or "INFO"
+    ).upper()
+
+    level = getattr(logging, level_str, logging.INFO)
+
+    logging.basicConfig(
+        level=level,
+        format="%(name)s %(levelname)s %(message)s",
+        force=True,
+    )
+
+    log = logging.getLogger(name)
+    log.setLevel(level)
+    log.info("log level: %s", level_str)
+    return log

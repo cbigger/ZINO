@@ -4,12 +4,18 @@ zino-daemon — main entrypoint and coordinator.
 
 Responsibilities:
   - Receives (message, channel_id) from clients over UDS.
-  - Assembles the most minimal valid messages array:
-      - System prompt from zino-sys if available; omitted if not.
+  - Assembles the full messages array:
+      - System prompt from zino-sys (optional).
+      - Context history from zino-ctx (optional): examples, hard memories, chat history.
       - User message.
-  - Queries zino-rtr capabilities on startup; routes accordingly.
+  - Routes through zino-agr for agentic loop (tool/skill execution), or
+    falls back to direct zino-rtr dispatch when agr is unavailable.
+  - Stores chat history via zino-mem (optional).
   - Returns the model response to the client (streaming or collected).
-  - Acts as the upgrade path for ctx/mem services when they exist.
+
+All service connections are attempted live per-request.  If a service is
+unreachable the daemon degrades gracefully — no startup probe cache that
+can go stale.
 
 UDS socket: /run/zino/daemon.sock (configurable)
 
@@ -29,7 +35,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, open_uds
+from zino_common import send_msg, recv_msg, open_uds, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -46,12 +52,12 @@ def load_config(path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Service probes
+# Service interactions (all tolerant of unavailable services)
 # ---------------------------------------------------------------------------
 
 
 async def probe_rtr(rtr_socket: str) -> dict:
-    """Ask zino-rtr for its capabilities. Returns {} on failure."""
+    """Ask zino-rtr for its capabilities.  Returns {} on failure."""
     try:
         reader, writer = await open_uds(rtr_socket)
         await send_msg(writer, {"type": "capabilities"})
@@ -60,14 +66,14 @@ async def probe_rtr(rtr_socket: str) -> dict:
         await writer.wait_closed()
         return caps
     except Exception as e:
-        print(f"[daemon] Could not probe rtr at {rtr_socket}: {e}", file=sys.stderr)
+        log.warning("could not probe rtr at %s: %s", rtr_socket, e)
         return {}
 
 
 async def fetch_system_prompt(sys_socket: str) -> str | None:
     """
     Request the current built system prompt from zino-sys.
-    Returns None if zino-sys is unavailable — daemon continues without a system prompt.
+    Returns None if zino-sys is unavailable — daemon continues in bare mode.
     """
     try:
         reader, writer = await open_uds(sys_socket)
@@ -80,8 +86,54 @@ async def fetch_system_prompt(sys_socket: str) -> str | None:
             return content if content else None
         return None
     except Exception as e:
-        print(f"[daemon] Could not reach zino-sys at {sys_socket}: {e} — bare mode.", file=sys.stderr)
+        log.warning("could not reach zino-sys: %s — bare mode.", e)
         return None
+
+
+async def fetch_context(
+    ctx_socket: str, channel_id: str | None, user_message: str,
+) -> list[dict]:
+    """
+    Request context history from zino-ctx.
+    Returns [] if zino-ctx is unavailable.
+    """
+    try:
+        reader, writer = await open_uds(ctx_socket)
+        await send_msg(writer, {
+            "type":         "build",
+            "channel_id":   channel_id,
+            "user_message": user_message,
+        })
+        msg = await recv_msg(reader)
+        writer.close()
+        await writer.wait_closed()
+        if msg.get("type") == "context":
+            return msg.get("messages", [])
+        return []
+    except Exception as e:
+        log.warning("could not reach zino-ctx: %s — no context.", e)
+        return []
+
+
+async def store_history(
+    mem_socket: str, channel_id: str, user_msg: str, assistant_msg: str,
+):
+    """Append a user+assistant exchange to channel history in zino-mem."""
+    try:
+        reader, writer = await open_uds(mem_socket)
+        await send_msg(writer, {
+            "type":       "append_history",
+            "channel_id": channel_id,
+            "messages": [
+                {"role": "user",      "content": user_msg},
+                {"role": "assistant", "content": assistant_msg},
+            ],
+        })
+        await recv_msg(reader)
+        writer.close()
+        await writer.wait_closed()
+    except Exception as e:
+        log.warning("could not store history in zino-mem: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +141,16 @@ async def fetch_system_prompt(sys_socket: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def assemble_messages(user_message: str, system_prompt: str | None) -> list[dict]:
+def assemble_messages(
+    user_message: str,
+    system_prompt: str | None,
+    context_messages: list[dict] | None = None,
+) -> list[dict]:
     """
-    Assemble the minimal valid messages array.
+    Assemble the full messages array.
 
-      [system]      ← from zino-sys if available; omitted if not
-      [ctx/memory]  ← from zino-ctx/zino-mem when available; omitted for now
+      [system]      ← from zino-sys if available
+      [context]     ← from zino-ctx: examples, hard memories, chat history
       [user]        ← always present
     """
     messages = []
@@ -102,14 +158,104 @@ def assemble_messages(user_message: str, system_prompt: str | None) -> list[dict
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
 
-    # TODO: inject hard memory / context history here (zino-ctx, zino-mem)
+    if context_messages:
+        messages.extend(context_messages)
 
     messages.append({"role": "user", "content": user_message})
     return messages
 
 
 # ---------------------------------------------------------------------------
-# RTR dispatch
+# AGR dispatch
+# ---------------------------------------------------------------------------
+
+
+async def dispatch_to_agr(
+    agr_socket: str,
+    messages: list[dict],
+    temperature: float,
+    top_p: float,
+    max_iterations: int,
+    want_stream: bool,
+    client_writer: asyncio.StreamWriter,
+) -> str | None:
+    """
+    Send assembled messages to zino-agr for agentic processing.
+
+    When want_stream=True, agr streams chunk/done/error packets which are
+    forwarded directly to client_writer in real-time.
+
+    When want_stream=False, chunks are collected internally and sent as a
+    single {"type": "response"} packet.
+
+    Returns the full response text (for history storage), or None on failure.
+    """
+    try:
+        reader, writer = await open_uds(agr_socket)
+    except Exception as e:
+        log.info("agr not available: %s — falling back to rtr.", e)
+        return None
+
+    try:
+        await send_msg(writer, {
+            "type":           "run",
+            "messages":       messages,
+            "temperature":    temperature,
+            "top_p":          top_p,
+            "max_iterations": max_iterations,
+            "stream":         want_stream,
+        })
+
+        if want_stream:
+            # Forward streaming packets from agr directly to client
+            full_text = None
+            while True:
+                packet = await recv_msg(reader)
+                ptype = packet.get("type")
+                if ptype == "chunk":
+                    await send_msg(client_writer, packet)
+                elif ptype == "done":
+                    await send_msg(client_writer, packet)
+                    full_text = packet.get("full_text", "")
+                    log.info("agr streaming done: %d chars", len(full_text))
+                    break
+                elif ptype == "error":
+                    await send_msg(client_writer, packet)
+                    log.error("agr streaming error: %s", packet.get("message"))
+                    break
+                else:
+                    log.warning("unexpected agr packet type: %s", ptype)
+                    break
+            return full_text
+        else:
+            # Non-streaming: read the single result packet
+            packet = await recv_msg(reader)
+            if packet.get("type") == "result":
+                content = packet.get("content", "")
+                await send_msg(client_writer, {"type": "response", "content": content})
+                return content
+            if packet.get("type") == "error":
+                log.error("agr error: %s", packet.get("message"))
+                await send_msg(client_writer, packet)
+            return None
+
+    except Exception as e:
+        log.error("agr dispatch error: %s", e)
+        try:
+            await send_msg(client_writer, {
+                "type": "error",
+                "message": f"agr dispatch error: {e}",
+            })
+        except Exception:
+            pass
+        return None
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+# ---------------------------------------------------------------------------
+# RTR dispatch (fallback when agr is unavailable)
 # ---------------------------------------------------------------------------
 
 
@@ -121,19 +267,21 @@ async def dispatch_to_rtr(
     want_stream: bool,
     rtr_caps: dict,
     client_writer: asyncio.StreamWriter,
-):
+) -> str | None:
     """
     Send assembled messages to zino-rtr.
     Forward the response to the client.
-    Streaming is only requested if the client wants it AND rtr is capable.
+    Returns the full response text (for history storage), or None on error.
     """
     do_stream = want_stream and rtr_caps.get("streaming", False)
 
     try:
         reader, writer = await open_uds(rtr_socket)
     except Exception as e:
-        await send_msg(client_writer, {"type": "error", "message": f"Could not connect to rtr: {e}"})
-        return
+        await send_msg(client_writer,
+                       {"type": "error",
+                        "message": f"Could not connect to rtr: {e}"})
+        return None
 
     try:
         await send_msg(writer, {
@@ -145,17 +293,28 @@ async def dispatch_to_rtr(
         })
 
         if do_stream:
+            full_text = None
             while True:
                 packet = await recv_msg(reader)
                 await send_msg(client_writer, packet)
-                if packet.get("type") in ("done", "error"):
+                if packet.get("type") == "done":
+                    full_text = packet.get("full_text", "")
                     break
+                if packet.get("type") == "error":
+                    break
+            return full_text
         else:
             packet = await recv_msg(reader)
             await send_msg(client_writer, packet)
+            if packet.get("type") == "response":
+                return packet.get("content", "")
+            return None
 
     except Exception as e:
-        await send_msg(client_writer, {"type": "error", "message": f"rtr dispatch error: {e}"})
+        await send_msg(client_writer,
+                       {"type": "error",
+                        "message": f"rtr dispatch error: {e}"})
+        return None
     finally:
         writer.close()
         await writer.wait_closed()
@@ -168,9 +327,8 @@ async def dispatch_to_rtr(
 
 async def handle_client(
     config: dict,
-    sys_socket: str,
-    rtr_socket: str,
-    rtr_caps: dict,
+    sockets: dict,
+    rtr_caps_cache: dict,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
 ):
@@ -183,28 +341,66 @@ async def handle_client(
             await send_msg(writer, {"type": "error", "message": "Empty message."})
             return
 
+        channel_id  = msg.get("channel_id")
         want_stream = bool(msg.get("stream", False))
 
-        # TODO: retrieve channel history from zino-mem using msg.get("channel_id")
+        log.info("request: msg_len=%d channel=%s stream=%s",
+                 len(user_message), channel_id, want_stream)
+        log.debug("user message: %s", user_message)
 
         agent       = config.get("agent", {})
         temperature = float(agent.get("temperature", 0.7))
         top_p       = float(agent.get("top_p", 1.0))
+        max_iter    = int(config.get("agr", {}).get("max_iterations", 5))
 
-        # Fetch system prompt from zino-sys; None = bare mode (not an error)
-        system_prompt = await fetch_system_prompt(sys_socket)
+        # Lazy re-probe rtr capabilities if the cache is empty
+        if not rtr_caps_cache:
+            fresh = await probe_rtr(sockets["rtr"])
+            if fresh:
+                rtr_caps_cache.update(fresh)
+                log.info("rtr capabilities acquired: %s", rtr_caps_cache)
 
-        messages = assemble_messages(user_message, system_prompt)
+        # 1. System prompt from zino-sys (optional — tries every request)
+        system_prompt = await fetch_system_prompt(sockets["sys"])
+        log.info("system prompt: %s",
+                 f"{len(system_prompt)} chars" if system_prompt else "none (bare mode)")
 
-        await dispatch_to_rtr(
-            rtr_socket, messages, temperature, top_p,
-            want_stream, rtr_caps, writer,
+        # 2. Context from zino-ctx (optional — tries every request)
+        context_messages = await fetch_context(
+            sockets["ctx"], channel_id, user_message,
         )
+        log.info("context: %d messages", len(context_messages))
+
+        # 3. Assemble messages
+        messages = assemble_messages(user_message, system_prompt, context_messages)
+        log.info("assembled %d messages for inference", len(messages))
+
+        # 4. Route through agr (agentic loop), fall back to direct rtr
+        response_content = await dispatch_to_agr(
+            sockets["agr"], messages, temperature, top_p, max_iter,
+            want_stream, writer,
+        )
+        if response_content is None:
+            log.info("using direct rtr dispatch (stream=%s)", want_stream)
+            response_content = await dispatch_to_rtr(
+                sockets["rtr"], messages, temperature, top_p,
+                want_stream, rtr_caps_cache, writer,
+            )
+
+        # 5. Store history in zino-mem (optional — tries every request)
+        if channel_id and response_content:
+            await store_history(
+                sockets["mem"], channel_id, user_message, response_content,
+            )
+            log.info("history stored for channel=%s", channel_id)
+
+        log.info("request complete: response=%s",
+                 f"{len(response_content)} chars" if response_content else "none")
 
     except asyncio.IncompleteReadError:
         pass
     except Exception as e:
-        print(f"[daemon] Handler error ({peer}): {e}", file=sys.stderr)
+        log.error("handler error (%s): %s", peer, e)
         try:
             await send_msg(writer, {"type": "error", "message": str(e)})
         except Exception:
@@ -222,25 +418,27 @@ async def handle_client(
 async def main(config_path: str):
     config = load_config(config_path)
 
-    daemon_cfg  = config.get("daemon", {})
-    socket_path = daemon_cfg.get("socket", "/run/zino/daemon.sock")
-    rtr_socket  = config.get("rtr", {}).get("socket", "/run/zino/rtr.sock")
-    sys_socket  = config.get("sys", {}).get("socket", "/run/zino/sys.sock")
+    global log
+    log = setup_logging("zino.daemon", config)
 
-    # Probe rtr capabilities
-    rtr_caps = await probe_rtr(rtr_socket)
-    if rtr_caps:
-        print(f"[daemon] rtr capabilities: {rtr_caps}")
+    sockets = {
+        "daemon": config.get("daemon", {}).get("socket", "/run/zino/daemon.sock"),
+        "rtr":    config.get("rtr", {}).get("socket", "/run/zino/rtr.sock"),
+        "sys":    config.get("sys", {}).get("socket", "/run/zino/sys.sock"),
+        "exc":    config.get("exc", {}).get("socket", "/run/zino/exc.sock"),
+        "mem":    config.get("mem", {}).get("socket", "/run/zino/mem.sock"),
+        "ctx":    config.get("ctx", {}).get("socket", "/run/zino/ctx.sock"),
+        "agr":    config.get("agr", {}).get("socket", "/run/zino/agr.sock"),
+    }
+
+    # Initial rtr probe — mutable dict so handle_client can update it lazily
+    rtr_caps_cache = await probe_rtr(sockets["rtr"])
+    if rtr_caps_cache:
+        log.info("rtr capabilities: %s", rtr_caps_cache)
     else:
-        print("[daemon] Warning: could not reach rtr at startup. Will retry per request.")
+        log.info("rtr not yet reachable — will probe on first request.")
 
-    # Check sys availability (non-fatal)
-    test_prompt = await fetch_system_prompt(sys_socket)
-    if test_prompt:
-        print("[daemon] zino-sys available.")
-    else:
-        print("[daemon] zino-sys unavailable — running in bare mode.")
-
+    socket_path = sockets["daemon"]
     Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
     try:
         Path(socket_path).unlink()
@@ -248,18 +446,21 @@ async def main(config_path: str):
         pass
 
     server = await asyncio.start_unix_server(
-        lambda r, w: handle_client(config, sys_socket, rtr_socket, rtr_caps, r, w),
+        lambda r, w: handle_client(config, sockets, rtr_caps_cache, r, w),
         path=socket_path,
     )
 
-    print(f"[daemon] Listening on {socket_path}")
+    log.info("listening on %s", socket_path)
     async with server:
         await server.serve_forever()
 
 
+log = None  # set in main()
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="zino-daemon: main coordinator")
-    parser.add_argument("--config", "-c", default=os.environ.get("ZINO_CONFIG", "ZINO.toml"))
+    parser.add_argument("--config", "-c",
+                        default=os.environ.get("ZINO_CONFIG", "ZINO.toml"))
     args = parser.parse_args()
     asyncio.run(main(args.config))

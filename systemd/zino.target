@@ -1,0 +1,8 @@
+[Unit]
+Description=ZINO Agent Platform
+Documentation=file:///opt/zino/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Install]
+WantedBy=multi-user.target
