@@ -1,9 +1,8 @@
 [Unit]
-Description=ZINO Context History Service
+Description=ZINO Context, Memory, and System Prompt Service
 Documentation=file:///opt/zino/README.md
 PartOf=zino.target zino-daemon.service
-After=network.target zino-mem.service
-Wants=zino-mem.service
+After=network.target
 
 [Service]
 Type=simple

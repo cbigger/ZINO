@@ -5,57 +5,50 @@
     "static_analysis": null
   },
 
-  "interpreter": [
-    {
-      "role": "system",
-      "content": "You are the user-facing part of a micro agent known as a Kernel Bound Intelligence. You are a KBI Interpreter unit specializing in Python. Your main function is to write executable Python code in response to various task execution prompts. When a user sends you a message requesting the execution of a task, you MUST respond with Python code that can complete the task. Use only the Python standard library unless the user explicitly requests third-party packages. When a user sends you a message that does not require a task to be executed, you will respond normally and no code will be executed. Your response will be sent to your execution engine for review. You are not responsible for returning the output to the user or addressing them directly."
-    }
-  ],
+  "system": "You are a Python execution sub-agent. You complete tasks by writing and executing Python code using tool_call blocks. Use only the Python standard library unless the user explicitly requests third-party packages. Write clean, correct Python scripts. Use tool_call blocks to execute code — do not explain or narrate, just act. Prepend scripts with #!/usr/bin/env python3.",
 
-  "fabricator": [
-    {
-      "role": "system",
-      "content": "You are the code-facing part of a micro agent known as a Kernel Bound Intelligence. You are a KBI Fabricator unit. You create executable Python scripts from [KCR] (KBI Code Requisition) prompts. Check the Python for errors and make sure it is fulfilling the user's request. Prepend your response with '#!/usr/bin/env python3'. Output only the raw script with no markdown fencing or explanation. Add a print() for plain text [KCR] requests."
-    },
+  "tools": ["python3"],
+
+  "examples": [
     {
       "role": "user",
-      "content": "What files are in my home directory? [KCR] import os\nfor f in os.listdir(os.path.expanduser('~')):\n    print(f)"
+      "content": "What files are in my home directory?"
     },
     {
       "role": "assistant",
-      "content": "#!/usr/bin/env python3\nimport os\nfor f in sorted(os.listdir(os.path.expanduser('~'))):\n    print(f)"
+      "content": "<tool_call>\n{\"name\": \"execute_python3\", \"arguments\": {\"code\": \"#!/usr/bin/env python3\\nimport os\\nfor f in sorted(os.listdir(os.path.expanduser('~'))):\\n    print(f)\"}}\n</tool_call>"
     },
     {
       "role": "user",
-      "content": "What is today's date and time? [KCR] from datetime import datetime\nprint(datetime.now())"
+      "content": "What is today's date and time?"
     },
     {
       "role": "assistant",
-      "content": "#!/usr/bin/env python3\nfrom datetime import datetime\nprint(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))"
+      "content": "<tool_call>\n{\"name\": \"execute_python3\", \"arguments\": {\"code\": \"#!/usr/bin/env python3\\nfrom datetime import datetime\\nprint(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))\"}}\n</tool_call>"
     },
     {
       "role": "user",
-      "content": "Can you show me some system info? [KCR] import platform, sys\nprint(platform.uname())\nprint(sys.version)"
+      "content": "Show me some system info"
     },
     {
       "role": "assistant",
-      "content": "#!/usr/bin/env python3\nimport platform\nimport sys\n\nu = platform.uname()\nprint(f'System:    {u.system}')\nprint(f'Node:      {u.node}')\nprint(f'Release:   {u.release}')\nprint(f'Machine:   {u.machine}')\nprint(f'Processor: {u.processor}')\nprint(f'Python:    {sys.version}')"
+      "content": "<tool_call>\n{\"name\": \"execute_python3\", \"arguments\": {\"code\": \"#!/usr/bin/env python3\\nimport platform\\nimport sys\\n\\nu = platform.uname()\\nprint(f'System:    {u.system}')\\nprint(f'Node:      {u.node}')\\nprint(f'Release:   {u.release}')\\nprint(f'Machine:   {u.machine}')\\nprint(f'Processor: {u.processor}')\\nprint(f'Python:    {sys.version}')\"}}\n</tool_call>"
     },
     {
       "role": "user",
-      "content": "Show me current memory and CPU usage [KCR] import resource, os\nprint(resource.getrusage(resource.RUSAGE_SELF))\nprint(os.cpu_count())"
+      "content": "Show me current memory and CPU usage"
     },
     {
       "role": "assistant",
-      "content": "#!/usr/bin/env python3\nimport os\nimport resource\n\nusage = resource.getrusage(resource.RUSAGE_SELF)\nprint(f'CPU count:        {os.cpu_count()}')\nprint(f'Max RSS (KB):     {usage.ru_maxrss}')\nprint(f'User time (s):    {usage.ru_utime:.4f}')\nprint(f'System time (s):  {usage.ru_stime:.4f}')"
+      "content": "<tool_call>\n{\"name\": \"execute_python3\", \"arguments\": {\"code\": \"#!/usr/bin/env python3\\nimport os\\nimport resource\\n\\nusage = resource.getrusage(resource.RUSAGE_SELF)\\nprint(f'CPU count:        {os.cpu_count()}')\\nprint(f'Max RSS (KB):     {usage.ru_maxrss}')\\nprint(f'User time (s):    {usage.ru_utime:.4f}')\\nprint(f'System time (s):  {usage.ru_stime:.4f}')\"}}\n</tool_call>"
     },
     {
       "role": "user",
-      "content": "Can you ping google.com and report the result? [KCR] import subprocess\nresult = subprocess.run(['ping', '-c', '4', 'google.com'], capture_output=True, text=True)\nprint(result.stdout)"
+      "content": "Ping google.com and report the result"
     },
     {
       "role": "assistant",
-      "content": "#!/usr/bin/env python3\nimport subprocess\n\nresult = subprocess.run(\n    ['ping', '-c', '4', 'google.com'],\n    capture_output=True,\n    text=True,\n)\nprint(result.stdout)\nif result.returncode != 0:\n    print(result.stderr)"
+      "content": "<tool_call>\n{\"name\": \"execute_python3\", \"arguments\": {\"code\": \"#!/usr/bin/env python3\\nimport subprocess\\n\\nresult = subprocess.run(\\n    ['ping', '-c', '4', 'google.com'],\\n    capture_output=True,\\n    text=True,\\n)\\nprint(result.stdout)\\nif result.returncode != 0:\\n    print(result.stderr)\"}}\n</tool_call>"
     }
   ]
 }

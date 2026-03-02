@@ -126,19 +126,26 @@ systemd-tmpfiles --create
 echo "[9/10] Installing systemd units..."
 cp "${SRC_DIR}/systemd/zino.target"          /etc/systemd/system/
 cp "${SRC_DIR}/systemd/zino-rtr.service"     /etc/systemd/system/
-cp "${SRC_DIR}/systemd/zino-sys.service"     /etc/systemd/system/
 cp "${SRC_DIR}/systemd/zino-exc.service"     /etc/systemd/system/
-cp "${SRC_DIR}/systemd/zino-mem.service"     /etc/systemd/system/
 cp "${SRC_DIR}/systemd/zino-ctx.service"     /etc/systemd/system/
-cp "${SRC_DIR}/systemd/zino-agr.service"     /etc/systemd/system/
 cp "${SRC_DIR}/systemd/zino-daemon.service"  /etc/systemd/system/
+
+# Remove old units from previous installations (consolidated into ctx and daemon)
+for old_unit in zino-sys zino-mem zino-agr; do
+    if [[ -f "/etc/systemd/system/${old_unit}.service" ]]; then
+        echo "       Removing obsolete ${old_unit}.service"
+        systemctl disable --quiet "${old_unit}.service" 2>/dev/null || true
+        rm -f "/etc/systemd/system/${old_unit}.service"
+    fi
+done
+
 systemctl daemon-reload
 
 # ── 10. Enable services ─────────────────────────────────────────────────────
 
 echo "[10/10] Enabling ZINO services..."
 systemctl enable --quiet zino.target
-for svc in zino-rtr zino-sys zino-exc zino-mem zino-ctx zino-agr zino-daemon; do
+for svc in zino-rtr zino-exc zino-ctx zino-daemon; do
     systemctl enable --quiet "${svc}.service"
 done
 

@@ -53,14 +53,14 @@ def setup_logging(name: str, config: dict | None = None) -> logging.Logger:
     Level is determined by (highest priority first):
       1. ZINO_LOG_LEVEL environment variable
       2. [logging] level in ZINO.toml
-      3. "INFO" default
+      3. "DEBUG" default
 
     Output goes to stderr (which systemd captures into the journal).
     """
     level_str = (
         os.environ.get("ZINO_LOG_LEVEL")
         or (config or {}).get("logging", {}).get("level")
-        or "INFO"
+        or "DEBUG"
     ).upper()
 
     level = getattr(logging, level_str, logging.INFO)

@@ -1,10 +1,10 @@
 [Unit]
-Description=ZINO Daemon (Main Coordinator)
+Description=ZINO Daemon (Coordinator and Agentic Runtime)
 Documentation=file:///opt/zino/README.md
 PartOf=zino.target
-After=network-online.target zino-rtr.service zino-sys.service zino-exc.service zino-mem.service zino-ctx.service zino-agr.service
+After=network-online.target zino-rtr.service zino-exc.service zino-ctx.service
 Requires=zino-rtr.service
-Wants=network-online.target zino-sys.service zino-exc.service zino-mem.service zino-ctx.service zino-agr.service
+Wants=network-online.target zino-exc.service zino-ctx.service
 
 [Service]
 Type=simple

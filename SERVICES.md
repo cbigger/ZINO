@@ -10,45 +10,73 @@ Every service accepts `{"type": "ping"}` and responds with `{"type": "pong"}`. T
 
 **File:** `zino-daemon.py`
 **Socket:** `/run/zino/daemon.sock`
-**Role:** Main entrypoint and coordinator. Receives client requests, assembles the prompt (system prompt + context + user message), routes through agr or rtr, and stores history.
+**Role:** Main entrypoint, coordinator, and agentic runtime. Receives client requests, assembles the prompt (system prompt + context + user message), runs the agentic inference loop (tool/skill execution via interrupt token parsing), and stores history. Falls back to direct rtr dispatch when no tools or skills are loaded.
 
 ### Inbound (from client)
 
 ```
-{"message": str, "channel_id": str?, "stream": bool?}
+{"message": str, "channel_id": str?}
 ```
 
 | Field | Required | Description |
 |---|---|---|
 | `message` | yes | The user's message text |
 | `channel_id` | no | Channel identifier for history storage/retrieval |
-| `stream` | no | If `true`, response streams as chunks. Default `false` |
 
 ### Outbound (to client)
 
-**Streaming** (`stream: true`):
+All responses are streaming:
 ```
 N x {"type": "chunk", "delta": str}
+N x {"type": "tool_start", "kind": str, "name": str, "description": str}
+N x {"type": "tool_done", "kind": str, "name": str}
 1 x {"type": "done", "full_text": str}
 ```
 
-**Collected** (`stream: false`):
-```
-1 x {"type": "response", "content": str}
-```
-
-**Error** (either mode):
+**Error**:
 ```
 1 x {"type": "error", "message": str}
 ```
 
 ### Internal request flow
 
-1. Fetch system prompt from zino-sys (`get`)
+1. Fetch system prompt from zino-ctx (`get`)
 2. Fetch context from zino-ctx (`build`)
 3. Assemble messages array: `[system?, ...context, user]`
-4. Dispatch to zino-agr (`run` with `stream` flag); if agr is unavailable, fall back to direct zino-rtr dispatch (`infer`)
-5. Store user+assistant exchange in zino-mem (`append_history`) if `channel_id` was provided
+4. Run the agentic loop in-process: send to zino-rtr → parse for `<tool_call>` / `<task>` interrupts → execute via zino-exc / skill pipeline → inject results → repeat until no interrupts or max iterations reached. Falls back to direct zino-rtr dispatch if no tools/skills are loaded.
+5. Store user+assistant exchange in zino-ctx (`append_history`) if `channel_id` was provided
+
+### Agentic runtime
+
+The daemon embeds the agentic runtime (formerly zino-agr). It parses LLM output for two types of interrupt blocks:
+
+**Tool call:**
+```xml
+<tool_call>
+{"name": "execute_bash", "arguments": {"code": "ls -la"}}
+</tool_call>
+```
+
+Executed via zino-exc. The tool function name (e.g. `execute_bash`) is mapped to an executor name (e.g. `bash`) using definitions from the `tools/` directory.
+
+**Task delegation:**
+```xml
+<task>
+{"skill": "skill_name", "request": "what to do"}
+</task>
+```
+
+Runs the skill pipeline: interpreter (understand request) → fabricator (produce code) → execute via zino-exc. Skill definitions are loaded from the `skills/` directory.
+
+After each interrupt is executed, the result is injected into the response text as `<tool_response>...</tool_response>` or `<task_response>...</task_response>`, and the augmented text becomes the assistant message for the next iteration.
+
+#### StreamParser (internal)
+
+Used in streaming mode to detect interrupt blocks character-by-character as tokens arrive. Three states:
+
+- **FORWARDING** — normal text passes through; `<` triggers holdback
+- **HOLDBACK** — buffering characters that might form `<tool_call>` or `<task>`; flushes as text if no tag matches
+- **CAPTURING** — accumulating content inside a matched tag until the closing tag arrives
 
 ### Configuration
 
@@ -57,7 +85,12 @@ N x {"type": "chunk", "delta": str}
 | `[daemon] socket` | `/run/zino/daemon.sock` | UDS listen path |
 | `[agent] temperature` | `0.7` | LLM temperature for inference |
 | `[agent] top_p` | `1.0` | LLM top_p for inference |
-| `[agr] max_iterations` | `5` | Max agentic loop iterations |
+| `[agent] max_iterations` | `5` | Max agentic loop iterations |
+| `[rtr] socket` | `/run/zino/rtr.sock` | Socket for rtr communication |
+| `[exc] socket` | `/run/zino/exc.sock` | Socket for exc communication |
+| `[ctx] socket` | `/run/zino/ctx.sock` | Socket for ctx communication |
+| `[tools] dir` | `tools` | Directory containing tool definitions |
+| `[skills] dir` | `skills` | Directory containing skill definitions |
 
 ---
 
@@ -119,99 +152,13 @@ N x {"type": "chunk", "delta": str}
 
 ---
 
-## zino-agr
+## zino-ctx
 
-**File:** `zino-agr.py`
-**Socket:** `/run/zino/agr.sock`
-**Role:** Agentic runtime. Runs the inference loop: send prompt to rtr, parse response for interrupt tokens (`<tool_call>`, `<task>`), execute them, inject results, and repeat until no interrupts remain or max iterations is reached.
+**File:** `zino-ctx.py`
+**Socket:** `/run/zino/ctx.sock`
+**Role:** Combined context, memory, and system prompt service. Stores persistent memories and chat histories, builds the system prompt from templates, and assembles context messages for inference.
 
-### Messages
-
-#### `run`
-
-```
-→ {"type": "run", "messages": [...], "temperature": float, "top_p": float,
-   "max_iterations": int?, "stream": bool?}
-```
-
-| Field | Required | Description |
-|---|---|---|
-| `messages` | yes | Fully assembled prompt (system + context + user) |
-| `temperature` | yes | Sampling temperature |
-| `top_p` | yes | Nucleus sampling parameter |
-| `max_iterations` | no | Override default max iterations |
-| `stream` | no | If `true`, stream chunks to the caller in real-time. Default `false` |
-
-**Streaming response** (`stream: true`):
-```
-N x {"type": "chunk", "delta": str}
-1 x {"type": "done", "full_text": str, "iterations": int}
-```
-
-In streaming mode, text tokens are forwarded as chunks in real-time. When an interrupt block's closing tag arrives, execution fires immediately and the result is sent as a chunk before streaming continues. If interrupts were found, the loop continues with a new iteration.
-
-**Collected response** (`stream: false`):
-```
-1 x {"type": "result", "content": str, "iterations": int}
-```
-
-**Error** (either mode):
-```
-1 x {"type": "error", "message": str}
-```
-
-### Interrupt tokens
-
-The LLM output is parsed for two types of interrupt blocks:
-
-**Tool call:**
-```xml
-<tool_call>
-{"name": "execute_bash", "arguments": {"code": "ls -la"}}
-</tool_call>
-```
-
-Executed via zino-exc. The tool function name (e.g. `execute_bash`) is mapped to an executor name (e.g. `bash`) using definitions from the `tools/` directory.
-
-**Task delegation:**
-```xml
-<task>
-{"skill": "skill_name", "request": "what to do"}
-</task>
-```
-
-Runs the skill pipeline: interpreter (understand request) → fabricator (produce code) → execute via zino-exc. Skill definitions are loaded from the `skills/` directory.
-
-After each interrupt is executed, the result is injected into the response text as `<tool_response>...</tool_response>` or `<task_response>...</task_response>`, and the augmented text becomes the assistant message for the next iteration.
-
-### StreamParser (internal)
-
-Used in streaming mode to detect interrupt blocks character-by-character as tokens arrive. Three states:
-
-- **FORWARDING** — normal text passes through; `<` triggers holdback
-- **HOLDBACK** — buffering characters that might form `<tool_call>` or `<task>`; flushes as text if no tag matches
-- **CAPTURING** — accumulating content inside a matched tag until the closing tag arrives
-
-### Configuration
-
-| Key | Default | Description |
-|---|---|---|
-| `[agr] socket` | `/run/zino/agr.sock` | UDS listen path |
-| `[agr] max_iterations` | `5` | Default max agentic loop iterations |
-| `[rtr] socket` | `/run/zino/rtr.sock` | Socket for rtr communication |
-| `[exc] socket` | `/run/zino/exc.sock` | Socket for exc communication |
-| `[tools] dir` | `tools` | Directory containing tool definitions |
-| `[skills] dir` | `skills` | Directory containing skill definitions |
-
----
-
-## zino-sys
-
-**File:** `zino-sys.py`
-**Socket:** `/run/zino/sys.sock`
-**Role:** System prompt service. Loads a template (`SYSTEM.md`), substitutes placeholders with tool/skill definitions and runtime state, and serves the built prompt.
-
-### Messages
+### Messages — System prompt
 
 #### `get`
 
@@ -238,81 +185,17 @@ Reloads tools and skills from disk, re-renders the template, and returns the new
 ← {"type": "system_prompt", "content": str}
 ```
 
-Replaces the `%%SOFT_MEMORIES%%` placeholder value and re-renders the template. Returns the new prompt.
+Replaces the `%%SOFT_MEMORIES%%` placeholder value, persists to disk, re-renders the template. Returns the new prompt.
 
 ### Template placeholders
 
 | Placeholder | Source |
 |---|---|
-| `%%PERSONALITY%%` | `[sys] personality` in config |
+| `%%PERSONALITY%%` | `[ctx] personality` in config |
 | `%%TOOL_LIST%%` | Built from tool JSON files in `[tools] dir` |
 | `%%SKILL_LINES%%` | Built from skill JSON files in `[skills] dir` |
 | `%%MAX_ITERATIONS%%` | `[agent] max_iterations` in config |
-| `%%SOFT_MEMORIES%%` | Runtime-mutable via `set_soft_memory` |
-
-### Configuration
-
-| Key | Default | Description |
-|---|---|---|
-| `[sys] socket` | `/run/zino/sys.sock` | UDS listen path |
-| `[sys] template` | `SYSTEM.md` | Path to the system prompt template |
-| `[sys] personality` | `""` | Personality text for `%%PERSONALITY%%` |
-| `[sys] soft_memory` | `""` | Initial soft memory content |
-| `[tools] dir` | `tools` | Directory containing tool definitions |
-| `[skills] dir` | `skills` | Directory containing skill definitions |
-
----
-
-## zino-exc
-
-**File:** `zino-exc.py`
-**Socket:** `/run/zino/exc.sock`
-**Role:** Code execution service. Runs code produced by tools and skills, enforces timeouts, and optionally runs static analysis before execution.
-
-### Messages
-
-#### `execute`
-
-```
-→ {"type": "execute", "executor": str, "code": str}
-← {"type": "result", "exit_code": int, "stdout": str, "stderr": str}
-```
-
-Writes `code` to a temporary file and executes it with the named executor (e.g. `bash`, `python3`). If the executor has a static analysis tool configured (e.g. `shellcheck`), validation runs first as a warning (does not block execution). Returns stdout, stderr, and exit code.
-
-#### `validate`
-
-```
-→ {"type": "validate", "executor": str, "code": str}
-← {"type": "validation", "ok": bool, "errors": str}
-```
-
-Runs only static analysis on the code without executing it. Returns `ok: true` if validation passes or no validator is configured.
-
-#### `capabilities`
-
-```
-→ {"type": "capabilities"}
-← {"type": "capabilities", "executors": {name: {...}}, "timeout": int}
-```
-
-Returns the registered executors and their metadata (command, file extension, static analysis tool, whether the validator is available) and the configured timeout.
-
-### Configuration
-
-| Key | Default | Description |
-|---|---|---|
-| `[exc] socket` | `/run/zino/exc.sock` | UDS listen path |
-| `[exc] timeout` | `30` | Execution timeout in seconds |
-| `[tools] dir` | `tools` | Directory containing tool definitions (used to discover executors) |
-
----
-
-## zino-mem
-
-**File:** `zino-mem.py`
-**Socket:** `/run/zino/mem.sock`
-**Role:** Memory service. Stores channel-based chat histories, hard memories with TF-IDF similarity search, and a mutable soft memory string. All data persists to disk.
+| `%%SOFT_MEMORIES%%` | Runtime-mutable via `set_soft_memory` or `set_soft` |
 
 ### Messages — Chat history
 
@@ -381,34 +264,9 @@ Returns the current soft memory string.
 ← {"type": "ok"}
 ```
 
-Replaces the soft memory string and persists to disk.
+Replaces the soft memory string, persists to disk, and rebuilds the system prompt.
 
-### Configuration
-
-| Key | Default | Description |
-|---|---|---|
-| `[mem] socket` | `/run/zino/mem.sock` | UDS listen path |
-| `[mem] data_dir` | `data/mem` | Directory for persistent storage |
-
-### Storage layout
-
-```
-data/mem/
-  channels/
-    {channel_id}.json    # per-channel chat history
-  hard_memories.json     # all hard memory entries
-  soft_memory.txt        # soft memory string
-```
-
----
-
-## zino-ctx
-
-**File:** `zino-ctx.py`
-**Socket:** `/run/zino/ctx.sock`
-**Role:** Context assembly service. Builds the context messages inserted between the system prompt and user message. Combines skill examples, hard memories (via zino-mem), and chat history (via zino-mem).
-
-### Messages
+### Messages — Context assembly
 
 #### `build`
 
@@ -425,8 +283,8 @@ data/mem/
 Returns a messages array assembled in this order:
 
 1. **Skill examples** — user/assistant pairs from skill fabricator definitions (static, loaded at startup)
-2. **Hard memories** — similarity search results from zino-mem using `user_message` as query
-3. **Chat history** — recent messages from zino-mem for the given `channel_id`
+2. **Hard memories** — similarity search results using `user_message` as query
+3. **Chat history** — recent messages for the given `channel_id`
 
 ### Configuration
 
@@ -435,8 +293,67 @@ Returns a messages array assembled in this order:
 | `[ctx] socket` | `/run/zino/ctx.sock` | UDS listen path |
 | `[ctx] history_limit` | `50` | Max chat history messages to include |
 | `[ctx] hard_memory_top_k` | `3` | Number of hard memory results per search |
-| `[mem] socket` | `/run/zino/mem.sock` | Socket for zino-mem communication |
+| `[ctx] data_dir` | `data/mem` | Directory for persistent storage |
+| `[ctx] template` | `SYSTEM.md` | Path to the system prompt template |
+| `[ctx] personality` | `""` | Personality text for `%%PERSONALITY%%` |
+| `[ctx] soft_memory` | `""` | Initial soft memory content |
+| `[tools] dir` | `tools` | Directory containing tool definitions |
 | `[skills] dir` | `skills` | Directory containing skill definitions |
+
+### Storage layout
+
+```
+data/mem/
+  channels/
+    {channel_id}.json    # per-channel chat history
+  hard_memories.json     # all hard memory entries
+  soft_memory.txt        # soft memory string
+```
+
+---
+
+## zino-exc
+
+**File:** `zino-exc.py`
+**Socket:** `/run/zino/exc.sock`
+**Role:** Code execution service. Runs code produced by tools and skills, enforces timeouts, and optionally runs static analysis before execution.
+
+### Messages
+
+#### `execute`
+
+```
+→ {"type": "execute", "executor": str, "code": str}
+← {"type": "result", "exit_code": int, "stdout": str, "stderr": str}
+```
+
+Writes `code` to a temporary file and executes it with the named executor (e.g. `bash`, `python3`). If the executor has a static analysis tool configured (e.g. `shellcheck`), validation runs first as a warning (does not block execution). Returns stdout, stderr, and exit code.
+
+#### `validate`
+
+```
+→ {"type": "validate", "executor": str, "code": str}
+← {"type": "validation", "ok": bool, "errors": str}
+```
+
+Runs only static analysis on the code without executing it. Returns `ok: true` if validation passes or no validator is configured.
+
+#### `capabilities`
+
+```
+→ {"type": "capabilities"}
+← {"type": "capabilities", "executors": {name: {...}}, "timeout": int}
+```
+
+Returns the registered executors and their metadata (command, file extension, static analysis tool, whether the validator is available) and the configured timeout.
+
+### Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `[exc] socket` | `/run/zino/exc.sock` | UDS listen path |
+| `[exc] timeout` | `30` | Execution timeout in seconds |
+| `[tools] dir` | `tools` | Directory containing tool definitions (used to discover executors) |
 
 ---
 
