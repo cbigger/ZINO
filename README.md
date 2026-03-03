@@ -4,7 +4,7 @@ A modular agent platform. ZINO stands for **Z**INO **I**s **N**ot **O**penclaw.
 ## TODO:
 - Need skills to be booted as preconfigured complete zino agents
 - Need proper memory abstraction in ctx + backend provider template (like how rtr is agnostic w openai library)
-- zino-exc needs to be queried for execution environment
+- zino-exc needs to be queried for execution environment info injection into sysmem
 - eventually: user registry --> channels? service registry (LDAP?) for cross-install lookups for memory/tools/skills? 
 - Expand into full agent templates? What is a skill sub-agent to a full agent?
 
@@ -87,17 +87,18 @@ The message object in the standard openAI format is JSON with the following sche
 }
 
 This message object is further separated into two distinct pieces:
-1. the `system prompt` opens the exchange, is usually optional, and contains the following data:
+1. the `system prompt` or `system-memory` opens the exchange, is technically optional, and contains the following data:
     - Personality
     - Tools and how to use them
     - Skills and how to run them
     - Soft Memory (Memory notes) - things to remember about the current project, the user, etc.
+    - System State Information - information about the current working directory, execution environment, etc.
 
    The `system prompt` is central to the agent's proper functioning. A bad system prompt means 
-   more tool failures and bad wide awareness.
+   more tool failures and a lack of contextual awareness.
 
 
-2. The `chat history` is a sequence of messages between the `user` and the `assistant`. Agent programs compile
+2. The `chat history` or `history-memory` (hist-mem) is a sequence of messages between the `user` and the `assistant`. Agent programs compile
    this list from the following sources, typically in this order:
     - Task/Skill examples - These are real or fake user:asssistant exchanges which have been loaded from a
                             skill definition. This is commonly used in microAgents that have had a task delegated
