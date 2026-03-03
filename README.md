@@ -1,6 +1,13 @@
 # Z I N O
 A modular agent platform. ZINO stands for **Z**INO **I**s **N**ot **O**penclaw.
 
+## TODO:
+- Need skills to be booted as preconfigured complete zino agents
+- Need proper memory abstraction in ctx + backend provider template (like how rtr is agnostic w openai library)
+- zino-exc needs to be queried for execution environment
+- eventually: user registry --> channels? service registry (LDAP?) for cross-install lookups for memory/tools/skills? 
+- Expand into full agent templates? What is a skill sub-agent to a full agent?
+
 
 ## On LLMs and Agents
 Modern agent systems are a combination of a lot of moving parts. It is a necessary process, then, to identify and codify 
