@@ -33,7 +33,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, setup_logging
+from zino_utils.zino_common import send_msg, recv_msg, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config

@@ -44,6 +44,8 @@ fi
 
 echo "[2/10] Creating directories..."
 mkdir -p "${INSTALL_DIR}"
+mkdir -p "${INSTALL_DIR}/agents"
+mkdir -p "${INSTALL_DIR}/zino_utils"
 mkdir -p "${CONFIG_DIR}"
 mkdir -p "${DATA_DIR}/mem/channels"
 mkdir -p "${RUN_DIR}"
@@ -52,10 +54,11 @@ mkdir -p "${RUN_DIR}"
 
 echo "[3/10] Syncing application files to ${INSTALL_DIR}..."
 rsync -a "${SRC_DIR}/"*.py          "${INSTALL_DIR}/"
-rsync -a "${SRC_DIR}/SYSTEM.md"     "${INSTALL_DIR}/"
+rsync -a "${SRC_DIR}/zino_utils/"*.py          "${INSTALL_DIR}/zino_utils/"
+rsync -a "${SRC_DIR}/agents/"*     "${INSTALL_DIR}/agents/"
 rsync -a "${SRC_DIR}/requirements.txt" "${INSTALL_DIR}/"
-rsync -a --delete "${SRC_DIR}/tools/"  "${INSTALL_DIR}/tools/"
-rsync -a --delete "${SRC_DIR}/skills/" "${INSTALL_DIR}/skills/"
+#rsync -a "${SRC_DIR}/agents/tools/"  "${INSTALL_DIR}/agents/tools/"
+#rsync -a "${SRC_DIR}/agents/skills/" "${INSTALL_DIR}/agents/skills/"
 
 # ── 4. Configuration ────────────────────────────────────────────────────────
 
@@ -153,7 +156,7 @@ done
 
 cat > /usr/local/bin/zino-cli <<'CLIEOF'
 #!/bin/bash
-exec /opt/zino/venv/bin/python3 /opt/zino/zino-cli.py \
+exec /opt/zino/venv/bin/python3 /opt/zino/zino_utils/zino-cli.py \
     --config /etc/zino/ZINO.toml "$@"
 CLIEOF
 chmod 755 /usr/local/bin/zino-cli
@@ -175,4 +178,3 @@ echo "  systemctl status 'zino-*'"
 echo ""
 echo "Quick test:"
 echo "  zino-cli \"Hello, what can you do?\""
-echo "  zino-cli --stream \"List the files in /tmp\""

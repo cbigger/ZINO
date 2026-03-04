@@ -35,7 +35,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import openai
 
-from zino_common import send_msg, recv_msg, HEADER, setup_logging
+from zino_utils.zino_common import send_msg, recv_msg, HEADER, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config

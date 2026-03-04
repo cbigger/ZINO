@@ -43,7 +43,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, open_uds, setup_logging
+from zino_utils.zino_common import send_msg, recv_msg, open_uds, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -519,7 +519,7 @@ def assemble_messages(
 
 
 class AgenticRuntime:
-    """In-process agentic loop (formerly zino-agr)."""
+    """In-process agentic loop."""
 
     def __init__(self, config: dict):
         self.rtr_socket = config.get("rtr", {}).get("socket", "/run/zino/rtr.sock")

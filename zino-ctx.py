@@ -2,10 +2,25 @@
 """
 zino-ctx — context, memory, and system prompt service.
 
-Combines the functionality of the former zino-mem, zino-sys, and zino-ctx
-services into a single process.
+## TODO - needs to implement the (message, ctxkey=None) protocol to enable
+          ingest-sync work.
+          Ideally, what we used to call channels will now contain both the configuration
+          *and* the chat history. This will allow us to facilitate the sub-agent system
+          better, making sub-agents capable of being full agents in their own right, but
+          with a "boss" that is able to run things through them.
+
+
 
 Responsibilities:
+ - response to an incoming (message, ctxkey). zino-ctx returns the complete formatted message.
+    if the ctxkey is None, the default config is used, the one stored on disk.
+    if the ctxkey is not None, then we pull the already-built system prompt and
+    messages from the Database corresponding to the ctxkey.
+
+ - Beyond the above io, a zino-ctx implementation can perform whatever actions it wants to find and
+   build the context for the model.
+
+  - Stores and retrieves configurations.
   - Stores and retrieves channel-based chat histories (JSON files on disk).
   - Stores and retrieves hard memories with TF-IDF similarity search.
   - Stores and retrieves the soft memory string.
@@ -63,7 +78,7 @@ import tomllib
 from collections import Counter
 from pathlib import Path
 
-from zino_common import send_msg, recv_msg, setup_logging
+from zino_utils.zino_common import send_msg, recv_msg, setup_logging
 
 # ---------------------------------------------------------------------------
 # Config
@@ -121,7 +136,6 @@ class MemService:
         self.channels_dir = self.data_dir / "channels"
         self.hard_path = self.data_dir / "hard_memories.json"
         self.soft_path = self.data_dir / "soft_memory.txt"
-
         self.channels_dir.mkdir(parents=True, exist_ok=True)
 
         # Load hard memories
