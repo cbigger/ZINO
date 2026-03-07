@@ -235,7 +235,8 @@ packaged daemons on debian linux
 
 
 ### Clients
-Two clients are included as optional packages: zino-cli and zino-rest
+A s,all CLI client is included with install as: zino-cli
+A REST server is available as a separate package: https://github.com/cbigger/ZINO-REST
 
 
 
