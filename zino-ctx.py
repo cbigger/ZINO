@@ -303,6 +303,14 @@ def load_template(config: dict) -> str:
         return ""
     return p.read_text(encoding="utf-8")
 
+def load_personality(config: dict) -> str:
+    path = config.get("ctx", {}).get("personality", "PERSONALITY.md")
+    p = Path(path)
+    if not p.exists():
+        log.warning("PERSONALITY.md not found at %s — serving unflavoured prompt.", path)
+        return ""
+    return p.read_text(encoding="utf-8")
+
 
 def _tool_fn_name(executor: str) -> str:
     return f"execute_{executor}"
@@ -314,7 +322,7 @@ def build_prompt(config: dict, tools: dict, skills: dict, soft_memory: str) -> s
         return ""
 
     # %%PERSONALITY%%
-    personality = config.get("ctx", {}).get("personality", "")
+    personality = load_personality(config)
 
     # %%TOOL_LIST%%
     seen_executors: set[str] = set()
